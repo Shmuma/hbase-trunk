@@ -3250,6 +3250,7 @@ public class HRegion implements HeapSize { // , Writable{
   class RegionScannerImpl implements RegionScanner {
     // Package local for testability
     KeyValueHeap storeHeap = null;
+    KeyValueHeap joinedHeap = null;
     private final byte [] stopRow;
     private Filter filter;
     private List<KeyValue> results = new ArrayList<KeyValue>();
@@ -3289,7 +3290,11 @@ public class HRegion implements HeapSize { // , Writable{
         scannerReadPoints.put(this, this.readPt);
       }
 
+      // Here we separate all scanners into two lists - first is scanners,
+      // providing data required by the filter to operate (scanners list) and
+      // all others (joinedScanners list).
       List<KeyValueScanner> scanners = new ArrayList<KeyValueScanner>();
+      List<KeyValueScanner> joinedScanners = new ArrayList<KeyValueScanner>();
       if (additionalScanners != null) {
         scanners.addAll(additionalScanners);
       }
@@ -3298,9 +3303,17 @@ public class HRegion implements HeapSize { // , Writable{
           scan.getFamilyMap().entrySet()) {
         Store store = stores.get(entry.getKey());
         StoreScanner scanner = store.getScanner(scan, entry.getValue());
-        scanners.add(scanner);
+        if (this.filter == null || this.filter.isFamilyEssential(entry.getKey())) {
+          scanners.add(scanner);
+        }
+        else {
+          joinedScanners.add(scanner);
+        }
       }
       this.storeHeap = new KeyValueHeap(scanners, comparator);
+      if (!joinedScanners.isEmpty()) {
+        this.joinedHeap = new KeyValueHeap(joinedScanners, comparator);
+      }
     }
 
     RegionScannerImpl(Scan scan) throws IOException {
@@ -3389,6 +3402,9 @@ public class HRegion implements HeapSize { // , Writable{
 
           final boolean stopRow = isStopRow(nextRow);
 
+          // save that the row was empty before filters applied to it.
+          final boolean isEmptyRow = results.isEmpty();
+
           // now that we have an entire row, lets process with a filters:
 
           // first filter with the filterRow(List)
@@ -3396,7 +3412,7 @@ public class HRegion implements HeapSize { // , Writable{
             filter.filterRow(results);
           }
 
-          if (results.isEmpty() || filterRow()) {
+          if (isEmptyRow || filterRow()) {
             // this seems like a redundant step - we already consumed the row
             // there're no left overs.
             // the reasons for calling this method are:
@@ -3409,6 +3425,32 @@ public class HRegion implements HeapSize { // , Writable{
 
             if (!stopRow) continue;
           }
+          else {
+            // Here we need to fetch additional, non-essential data into row. This
+            // values are not needed for filter to work, so we postpone their
+            // fetch to (possible) reduce amount of data loads from disk.
+            if (this.joinedHeap != null && this.joinedHeap.seek(KeyValue.createFirstOnRow(currentRow))) {
+              KeyValue nextKV = this.joinedHeap.peek();
+              while (true) {
+                this.joinedHeap.next(results, limit - results.size());
+                nextKV = this.joinedHeap.peek();
+                if (nextKV == null) {
+                  break;
+                }
+                if (!Bytes.equals(currentRow, nextKV.getRow())) {
+                  break;
+                }
+              }
+            }
+
+            // Double check to prevent empty rows to appear in result. It could be
+            // the case when SingleValueExcludeFilter used.
+            if (results.isEmpty()) {
+              nextRow(currentRow);
+              if (!stopRow) continue;
+            }
+          }
+
           return !stopRow;
         }
       }
@@ -3448,6 +3490,10 @@ public class HRegion implements HeapSize { // , Writable{
       if (storeHeap != null) {
         storeHeap.close();
         storeHeap = null;
+      }
+      if (joinedHeap != null) {
+        joinedHeap.close();
+        joinedHeap = null;
       }
       // no need to sychronize here.
       scannerReadPoints.remove(this);
