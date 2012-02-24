@@ -3429,7 +3429,8 @@ public class HRegion implements HeapSize { // , Writable{
             // Here we need to fetch additional, non-essential data into row. This
             // values are not needed for filter to work, so we postpone their
             // fetch to (possible) reduce amount of data loads from disk.
-            if (this.joinedHeap != null && this.joinedHeap.seek(KeyValue.createFirstOnRow(currentRow))) {
+            if (this.joinedHeap != null &&
+                this.joinedHeap.seek(KeyValue.createFirstOnRow(currentRow))) {
               while (true) {
                 this.joinedHeap.next(results, limit - results.size());
                 KeyValue nextKV = this.joinedHeap.peek();
