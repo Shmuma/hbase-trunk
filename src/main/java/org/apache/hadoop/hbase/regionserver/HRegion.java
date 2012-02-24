@@ -3430,10 +3430,9 @@ public class HRegion implements HeapSize { // , Writable{
             // values are not needed for filter to work, so we postpone their
             // fetch to (possible) reduce amount of data loads from disk.
             if (this.joinedHeap != null && this.joinedHeap.seek(KeyValue.createFirstOnRow(currentRow))) {
-              KeyValue nextKV = this.joinedHeap.peek();
               while (true) {
                 this.joinedHeap.next(results, limit - results.size());
-                nextKV = this.joinedHeap.peek();
+                KeyValue nextKV = this.joinedHeap.peek();
                 if (nextKV == null) {
                   break;
                 }
